@@ -1,0 +1,9 @@
+platform,campaign_name,objective,spend,impressions,clicks,conversions,conversion_value,reach
+google,Search Brand,Sales,420,18000,1250,82,4100,
+google,Search Generic,Sales,950,52000,1850,48,2400,
+google,Performance Max,Sales,760,61000,1420,71,3550,
+google,Display Remarketing,Sales,380,95000,620,14,700,
+meta,Prospecting Video,Sales,680,84000,1320,52,2860,51000
+meta,Retargeting,Sales,310,28000,690,44,2640,16000
+meta,Lookalike Purchasers,Sales,540,67000,980,39,1950,39000
+meta,Broad Creative Test,Sales,720,110000,990,21,1050,47000
