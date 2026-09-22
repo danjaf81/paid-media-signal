@@ -964,6 +964,314 @@ function normalizePerformanceRow(
   return normalized;
 }
 
+
+const KPI_CONFIG = {
+  roas: {
+    direction: "higher",
+    getValue: (row) => {
+      if (Number.isFinite(row.roas)) {
+        return row.roas;
+      }
+
+      if (
+        row.spend > 0 &&
+        Number.isFinite(row.conversion_value)
+      ) {
+        return row.conversion_value / row.spend;
+      }
+
+      return null;
+    },
+  },
+
+  cpc: {
+    direction: "lower",
+    getValue: (row) => {
+      if (Number.isFinite(row.cpc)) {
+        return row.cpc;
+      }
+
+      if (
+        row.clicks > 0 &&
+        Number.isFinite(row.spend)
+      ) {
+        return row.spend / row.clicks;
+      }
+
+      return null;
+    },
+  },
+
+  ctr: {
+    direction: "higher",
+    getValue: (row) => {
+      if (Number.isFinite(row.link_ctr)) {
+        return row.link_ctr;
+      }
+
+      if (Number.isFinite(row.ctr)) {
+        return row.ctr;
+      }
+
+      if (
+        row.impressions > 0 &&
+        Number.isFinite(row.clicks)
+      ) {
+        return (
+          row.clicks /
+          row.impressions
+        ) * 100;
+      }
+
+      return null;
+    },
+  },
+
+  reach: {
+    direction: "higher",
+    getValue: (row) =>
+      Number.isFinite(row.reach)
+        ? row.reach
+        : null,
+  },
+
+  purchases: {
+    direction: "higher",
+    getValue: (row) => {
+      const outcomeType = String(
+        row.outcome_type || ""
+      ).toLowerCase();
+
+      if (
+        outcomeType.includes("purchase") &&
+        Number.isFinite(row.outcome_value)
+      ) {
+        return row.outcome_value;
+      }
+
+      return Number.isFinite(row.conversions)
+        ? row.conversions
+        : null;
+    },
+  },
+
+  leads: {
+    direction: "higher",
+    getValue: (row) => {
+      const outcomeType = String(
+        row.outcome_type || ""
+      ).toLowerCase();
+
+      if (
+        outcomeType.includes("lead") &&
+        Number.isFinite(row.outcome_value)
+      ) {
+        return row.outcome_value;
+      }
+
+      return null;
+    },
+  },
+
+  cpa: {
+    direction: "lower",
+    getValue: (row) => {
+      const outcomeType = String(
+        row.outcome_type || ""
+      ).toLowerCase();
+
+      if (
+        outcomeType.includes("purchase") &&
+        Number.isFinite(row.cost_per_result)
+      ) {
+        return row.cost_per_result;
+      }
+
+      if (
+        row.conversions > 0 &&
+        Number.isFinite(row.spend)
+      ) {
+        return row.spend / row.conversions;
+      }
+
+      return null;
+    },
+  },
+
+  cpl: {
+    direction: "lower",
+    getValue: (row) => {
+      const outcomeType = String(
+        row.outcome_type || ""
+      ).toLowerCase();
+
+      if (
+        outcomeType.includes("lead") &&
+        Number.isFinite(row.cost_per_result)
+      ) {
+        return row.cost_per_result;
+      }
+
+      return null;
+    },
+  },
+};
+
+
+function evaluatePerformanceRows(
+  rows,
+  primaryKpi,
+  targetValue = null
+) {
+  const kpiKey = String(primaryKpi || "")
+    .trim()
+    .toLowerCase();
+
+  const config = KPI_CONFIG[kpiKey];
+
+  if (!config) {
+    throw new Error(
+      `Unsupported KPI: ${primaryKpi}`
+    );
+  }
+
+  const rowsWithKpi = rows
+    .map((row) => ({
+      ...row,
+      kpi_value: config.getValue(row),
+    }))
+    .filter((row) =>
+      Number.isFinite(row.kpi_value)
+    );
+
+    if (rowsWithKpi.length === 0) {
+  return {
+    kpi: kpiKey,
+    direction: config.direction,
+    target:
+      Number.isFinite(targetValue) &&
+      targetValue > 0
+        ? targetValue
+        : null,
+    account_median: null,
+    status: "KPI_NOT_AVAILABLE",
+    rows: [],
+  };
+}
+
+  const accountMedian = median(
+    rowsWithKpi.map(
+      (row) => row.kpi_value
+    )
+  );
+
+  const hasTarget =
+    Number.isFinite(targetValue) &&
+    targetValue > 0;
+
+  const evaluateDelta = (
+    value,
+    reference
+  ) => {
+    if (
+      !Number.isFinite(reference) ||
+      reference <= 0
+    ) {
+      return null;
+    }
+
+    if (config.direction === "lower") {
+      return (reference - value) / reference;
+    }
+
+    return (value - reference) / reference;
+  };
+
+  const evaluatedRows = rowsWithKpi.map(
+    (row) => {
+      const vsAccount = evaluateDelta(
+        row.kpi_value,
+        accountMedian
+      );
+
+      const vsTarget = hasTarget
+        ? evaluateDelta(
+            row.kpi_value,
+            targetValue
+          )
+        : null;
+
+      let signal = "IN_LINE";
+
+      if (hasTarget) {
+        if (
+          vsTarget >= 0.1 &&
+          vsAccount >= 0.1
+        ) {
+          signal = "STRONG";
+        } else if (vsTarget >= 0) {
+          signal = "ON_TARGET";
+        } else if (
+          vsTarget < 0 &&
+          vsAccount >= 0.1
+        ) {
+          signal =
+            "STRONG_BUT_BELOW_TARGET";
+        } else if (
+          vsTarget <= -0.2 &&
+          vsAccount <= -0.1
+        ) {
+          signal = "UNDERPERFORMING";
+        } else {
+          signal = "REVIEW";
+        }
+      } else {
+        if (vsAccount >= 0.2) {
+          signal = "ABOVE_ACCOUNT";
+        } else if (vsAccount <= -0.2) {
+          signal = "BELOW_ACCOUNT";
+        }
+      }
+
+      return {
+        ...row,
+
+        performance: {
+          kpi: kpiKey,
+          value: row.kpi_value,
+          target: hasTarget
+            ? targetValue
+            : null,
+          account_median: accountMedian,
+
+          vs_target_pct:
+            vsTarget === null
+              ? null
+              : vsTarget * 100,
+
+          vs_account_pct:
+            vsAccount === null
+              ? null
+              : vsAccount * 100,
+
+          signal,
+        },
+      };
+    }
+  );
+
+  return {
+    kpi: kpiKey,
+    direction: config.direction,
+    target: hasTarget
+      ? targetValue
+      : null,
+    account_median: accountMedian,
+    rows: evaluatedRows,
+  };
+}
+
+
 function isSummaryRow(row) {
   return Object.values(row).some((value) => {
     const text = String(value || "")
@@ -1640,6 +1948,277 @@ return aiAudit;
 
 }
 
+
+async function analyzePaidMediaPerformance(
+  files,
+  audit,
+  primaryKpi,
+  targetValue
+) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY missing");
+  }
+
+  const profile =
+    buildDeterministicProfile(files);
+
+  const MAX_ROWS_PER_FILE = 200;
+
+  const datasets = files.map((file) => {
+    const rows = (file.data_rows || [])
+      .map((row) =>
+        normalizePerformanceRow(
+          row,
+          file.filename,
+          profile
+        )
+      )
+      .filter(
+        (row) =>
+          Object.keys(row).length > 0
+      )
+      .filter(
+        (row) => !isSummaryRow(row)
+      );
+
+    return {
+      filename: file.filename,
+      metadata:
+        file.metadata_rows || [],
+      total_rows: rows.length,
+      rows_sent: Math.min(
+        rows.length,
+        MAX_ROWS_PER_FILE
+      ),
+      truncated:
+        rows.length > MAX_ROWS_PER_FILE,
+      rows: rows.slice(
+        0,
+        MAX_ROWS_PER_FILE
+      ),
+    };
+  });
+
+  const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+
+  const response =
+    await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.2,
+
+      messages: [
+        {
+          role: "system",
+          content: `
+You are a senior paid media performance analyst.
+
+You receive normalized Google Ads and/or Meta Ads reports.
+
+The data has already been cleaned and known advertising fields have been mapped to canonical names.
+
+Your task is to analyze performance, identify meaningful opportunities and recommend concrete actions.
+
+IMPORTANT RULES:
+
+- Use only evidence contained in the supplied data.
+- Do not invent metrics, benchmarks or campaign results.
+- Do not assume causality when the data only shows correlation.
+- Do not compare fundamentally different objectives as if they were equivalent.
+- For Meta Ads, interpret outcome_value together with outcome_type.
+- Leads, purchases, profile visits and other outcomes must remain distinct.
+- post_interactions are NOT clicks.
+- conversion_value is NOT conversion count.
+- Respect the user's primary KPI and target when provided.
+- Check data_audit.primary_kpi_analysis before evaluating performance.
+- If the primary KPI status is "missing" or "ambiguous", explicitly state that the primary KPI cannot be reliably assessed.
+- In that case, secondary metrics such as CTR, CPC, reach or engagement may still be analyzed, but label them as secondary or proxy signals.
+- Do not describe a campaign, keyword, device or audience as "high-performing" unless the supplied data supports that conclusion through the primary KPI or a relevant outcome metric.
+- High CTR or engagement alone indicates traffic or engagement strength, not business performance.
+- If the primary KPI cannot be assessed, overall confidence must not be "high".
+- Distinguish performance against the business target from relative performance inside the account.
+- Use campaign, device, demographic, time, keyword or other reports together when useful.
+- If a recommendation depends on missing data, state that explicitly.
+- Do not claim creative fatigue unless frequency or creative-level evidence supports it.
+- Prefer a small number of important findings over many generic observations.
+
+Every important finding must include concrete supporting evidence from the supplied reports.
+
+Your goal is not to describe every metric.
+Your goal is to tell the user what matters, why it matters, and what they should investigate or change next.
+`,
+        },
+
+        {
+          role: "user",
+          content: JSON.stringify({
+            primary_kpi: primaryKpi,
+            target_value: targetValue,
+            data_audit: audit,
+            datasets,
+          }),
+        },
+      ],
+
+      response_format: {
+        type: "json_schema",
+
+        json_schema: {
+          name: "paid_media_performance_analysis",
+          strict: true,
+
+          schema: {
+            type: "object",
+
+            properties: {
+              executive_summary: {
+                type: "string",
+              },
+
+              findings: {
+                type: "array",
+
+                items: {
+                  type: "object",
+
+                  properties: {
+                    type: {
+                      type: "string",
+                      enum: [
+                        "strength",
+                        "risk",
+                        "opportunity",
+                        "data_gap",
+                      ],
+                    },
+
+                    title: {
+                      type: "string",
+                    },
+
+                    analysis: {
+                      type: "string",
+                    },
+
+                    evidence: {
+                      type: "array",
+
+                      items: {
+                        type: "object",
+
+                        properties: {
+                          filename: {
+                            type: "string",
+                          },
+
+                          entity: {
+                            type: "string",
+                          },
+
+                          metric: {
+                            type: "string",
+                          },
+
+                          value: {
+                            type: "string",
+                          },
+                        },
+
+                        required: [
+                          "filename",
+                          "entity",
+                          "metric",
+                          "value",
+                        ],
+
+                        additionalProperties: false,
+                      },
+                    },
+                  },
+
+                  required: [
+                    "type",
+                    "title",
+                    "analysis",
+                    "evidence",
+                  ],
+
+                  additionalProperties: false,
+                },
+              },
+
+              recommended_actions: {
+                type: "array",
+
+                items: {
+                  type: "object",
+
+                  properties: {
+                    priority: {
+                      type: "string",
+                      enum: [
+                        "high",
+                        "medium",
+                        "low",
+                      ],
+                    },
+
+                    action: {
+                      type: "string",
+                    },
+
+                    rationale: {
+                      type: "string",
+                    },
+                  },
+
+                  required: [
+                    "priority",
+                    "action",
+                    "rationale",
+                  ],
+
+                  additionalProperties: false,
+                },
+              },
+
+              data_quality_notes: {
+                type: "array",
+                items: {
+                  type: "string",
+                },
+              },
+
+              confidence: {
+                type: "string",
+                enum: [
+                  "high",
+                  "medium",
+                  "low",
+                ],
+              },
+            },
+
+            required: [
+              "executive_summary",
+              "findings",
+              "recommended_actions",
+              "data_quality_notes",
+              "confidence",
+            ],
+
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+
+  return JSON.parse(
+    response.choices[0].message.content
+  );
+}
+
 // ---------------------------------------------
 // API
 // ---------------------------------------------
@@ -1692,7 +2271,11 @@ app.post("/api/audit", async (req, res) => {
 
 app.post("/api/normalize", (req, res) => {
   try {
-    const { files } = req.body;
+    const {
+      files,
+      primary_kpi,
+      target_value,
+    } = req.body;
 
     if (!Array.isArray(files) || files.length === 0) {
       return res.status(400).json({
@@ -1720,12 +2303,22 @@ app.post("/api/normalize", (req, res) => {
           (row) => !isSummaryRow(row)
         );
 
+        const performance =
+           primary_kpi
+            ? evaluatePerformanceRows(
+              rows,
+              primary_kpi,
+              target_value
+            )
+         : null;
+
       return {
         filename: file.filename,
         original_rows:
           file.data_rows?.length || 0,
         normalized_rows: rows.length,
         rows,
+        performance,
       };
     });
 
@@ -1737,6 +2330,53 @@ app.post("/api/normalize", (req, res) => {
 
     res.status(500).json({
       error: "Normalization failed.",
+    });
+  }
+});
+
+
+app.post("/api/performance", async (req, res) => {
+  try {
+    const {
+      files,
+      audit,
+      primary_kpi,
+      target_value,
+    } = req.body;
+
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({
+        error: "No files provided.",
+      });
+    }
+
+    if (!audit) {
+      return res.status(400).json({
+        error: "Data audit missing.",
+      });
+    }
+
+    if (!primary_kpi) {
+      return res.status(400).json({
+        error: "Primary KPI missing.",
+      });
+    }
+
+    const analysis =
+      await analyzePaidMediaPerformance(
+        files,
+        audit,
+        primary_kpi,
+        target_value
+      );
+
+    res.json(analysis);
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: "Performance analysis failed.",
     });
   }
 });
